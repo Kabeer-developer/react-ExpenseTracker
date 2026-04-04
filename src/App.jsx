@@ -81,6 +81,7 @@ export default function ExpenseTracker() {
   });
   const [budgetForm, setBudgetForm] = useState({ category:"", limit:"" });
   const [recForm, setRecForm] = useState({ type:"expense", amount:"", category:"", description:"", frequency:"monthly", startDate:isoDate() });
+  const [newCatName, setNewCatName] = useState("");
 
   // ── Load from storage ──
   useEffect(() => {
@@ -248,6 +249,26 @@ export default function ExpenseTracker() {
     setRecurringRules(prev => [...prev, { ...recForm, id:Date.now(), lastApplied:null }]);
     setRecForm({ type:"expense", amount:"", category:"", description:"", frequency:"monthly", startDate:isoDate() });
     notify("🔁 Recurring rule saved!");
+  };
+
+  const addCustomCategory = () => {
+    const name = newCatName.trim();
+    if (!name) return;
+    if (categories.find(c => c.name.toLowerCase() === name.toLowerCase())) {
+      notify("Category already exists!", "warn");
+      return;
+    }
+    const newCat = {
+      id: name.toLowerCase().replace(/\s+/g, "-"),
+      name: name,
+      emoji: "🏷️",
+      color: "#6366f1",
+      bg: "rgba(99,102,241,0.15)"
+    };
+    setCategories(prev => [...prev, newCat]);
+    setForm(prev => ({ ...prev, category: newCat.id }));
+    setNewCatName("");
+    notify("✨ New category added!");
   };
 
   // ── Chart data ──
@@ -625,6 +646,12 @@ export default function ExpenseTracker() {
                 <option value="">Select category…</option>
                 {categories.map(c=><option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
               </select>
+              <div style={{ display:"flex", gap:8, marginTop:-4 }}>
+                <input placeholder="Or add new category..." value={newCatName} onChange={e=>setNewCatName(e.target.value)} style={{ ...inputStyle, flex:1 }} />
+                <button type="button" onClick={addCustomCategory} style={{ ...btnPrimary, padding:"0 16px", height:42, whiteSpace:"nowrap" }}>
+                  Add Category
+                </button>
+              </div>
               {/* Description */}
               <input placeholder="Description" value={form.description} onChange={e=>setForm(p=>({...p,description:e.target.value}))} required style={inputStyle}/>
               {/* Date */}
