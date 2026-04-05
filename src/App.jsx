@@ -30,6 +30,10 @@ const CATS = [
   { id:"gifts",   name:"Gifts",           emoji:"🎁", color:"#e879f9", bg:"rgba(232,121,249,0.15)"},
 ];
 
+const [password, setPassword] = useState("");
+const [input, setInput] = useState("");
+const [isLoggedIn, setIsLoggedIn] = useState(false);
+
 const fmt = (n, privacy, currency="₹") => privacy ? "••••••" : `${currency}${Number(n).toLocaleString("en-IN")}`;
 const isoDate = (d=new Date()) => d.toISOString().split("T")[0];
 const monthKey = (d) => `${new Date(d).getFullYear()}-${String(new Date(d).getMonth()+1).padStart(2,"0")}`;
@@ -103,7 +107,47 @@ export default function ExpenseTracker() {
   useEffect(() => { if (loaded) save("et:budgets", budgets); }, [budgets, loaded]);
   useEffect(() => { if (loaded) save("et:recurring", recurringRules); }, [recurringRules, loaded]);
   useEffect(() => { if (loaded) save("et:config", { dark, currency }); }, [dark, currency, loaded]);
-
+useEffect(() => {
+  const stored = localStorage.getItem("password");
+  if (stored) {
+    setPassword(stored);
+  }
+}, []);
+  {!password && (
+  <div>
+    <h3>Set Password</h3>
+    <input onChange={(e) => setInput(e.target.value)} />
+    <button
+      onClick={() => {
+        localStorage.setItem("password", input);
+        setPassword(input);
+      }}
+    >
+      Save
+    </button>
+  </div>
+)}
+  {password && !isLoggedIn && (
+  <div>
+    <h3>Login</h3>
+    <input onChange={(e) => setInput(e.target.value)} />
+    <button
+      onClick={() => {
+        if (input === password) {
+          setIsLoggedIn(true);
+        } else {
+          alert("Wrong password");
+        }
+      }}
+    >
+      Login
+    </button>
+  </div>
+)}
+  <button onClick={() => alert("Feature coming soon")}>
+  Forgot Password?
+</button>
+  {isLoggedIn && <h2>Welcome to Expense Tracker 🎉</h2>}
   // ── Apply recurring transactions ──
   useEffect(() => {
     if (!loaded || !recurringRules.length) return;
