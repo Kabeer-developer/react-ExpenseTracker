@@ -5,7 +5,7 @@ import {
   TrendingUp, TrendingDown, DollarSign, Calendar, Zap, X,
   ChevronDown, Check, ArrowUpDown, Target, Bell, FileText,
   Repeat, Tag, AlertCircle, ChevronRight, Wallet, BarChart2,
-  PieChart, Download, Filter, Gift, CreditCard,
+  PieChart, Download, Filter, Gift, CreditCard, Archive, RotateCcw,
 } from "lucide-react";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement, LineElement, PointElement } from 'chart.js';
 import { Bar, Doughnut, Line } from 'react-chartjs-2';
@@ -32,8 +32,84 @@ const CATS = [
 
 const fmt = (n, privacy, currency="₹") => privacy ? "••••••" : `${currency}${Number(n).toLocaleString("en-IN")}`;
 const isoDate = (d=new Date()) => d.toISOString().split("T")[0];
-const monthKey = (d) => `${new Date(d).getFullYear()}-${String(new Date(d).getMonth()+1).padStart(2,"0")}`;
+const monthKey = (d) => {
+  const x = new Date(typeof d === "string" && d.length >= 10 ? d.slice(0, 10) + "T12:00:00" : d);
+  if (Number.isNaN(x.getTime())) return "";
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`;
+};
 const CURRENCIES = ["₹","$","€","£","¥"];
+
+/** Monday-based week start (local), YYYY-MM-DD key */
+const weekStartKeyFromDate = (d) => {
+  const x = new Date(typeof d === "string" && d.length >= 10 ? d.slice(0, 10) + "T12:00:00" : d);
+  if (Number.isNaN(x.getTime())) return isoDate();
+  const day = x.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  x.setDate(x.getDate() + diff);
+  x.setHours(0, 0, 0, 0);
+  return isoDate(x);
+};
+
+const addDays = (key, n) => {
+  const x = new Date(key + "T12:00:00");
+  x.setDate(x.getDate() + n);
+  return isoDate(x);
+};
+
+/** Last `count` month keys ending at refDate's month, oldest first */
+const buildMonthlyBuckets = (refDate, count = 12) => {
+  const end = new Date(refDate);
+  const keys = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(end.getFullYear(), end.getMonth() - i, 1);
+    keys.push(monthKey(d));
+  }
+  return keys;
+};
+
+/** Last `count` week-start keys ending at week containing refDate */
+const buildWeeklyBuckets = (refDate, count = 12) => {
+  const start = weekStartKeyFromDate(refDate);
+  const keys = [];
+  for (let i = count - 1; i >= 0; i--) {
+    keys.push(addDays(start, -7 * i));
+  }
+  return keys;
+};
+
+const aggregateTrend = (transactions, bucketKeys, bucketFn) => {
+  const map = Object.fromEntries(bucketKeys.map((k) => [k, { income: 0, expense: 0 }]));
+  transactions.forEach((t) => {
+    const raw = new Date(t.date + "T12:00:00");
+    if (Number.isNaN(raw.getTime())) return;
+    const k = bucketFn(t.date);
+    if (k && map[k]) {
+      map[k][t.type] += Number(t.amount) || 0;
+    }
+  });
+  return bucketKeys.map((k) => [k, map[k]]);
+};
+
+const formatWeekLabel = (weekStartKey) => {
+  const d = new Date(weekStartKey + "T12:00:00");
+  if (Number.isNaN(d.getTime())) return weekStartKey;
+  const end = addDays(weekStartKey, 6);
+  const de = new Date(end + "T12:00:00");
+  const opts = { day: "numeric", month: "short" };
+  return `${d.toLocaleDateString("en-IN", opts)} – ${de.toLocaleDateString("en-IN", opts)}`;
+};
+
+const formatMonthLabel = (key) => {
+  const [y, m] = key.split("-").map(Number);
+  if (!y || !m) return key;
+  return new Date(y, m - 1, 1).toLocaleDateString("en-IN", { month: "short", year: "numeric" });
+};
+
+const normalizeFormDate = (s) => {
+  if (!s || typeof s !== "string") return isoDate();
+  const d = new Date(s + "T12:00:00");
+  return Number.isNaN(d.getTime()) ? isoDate() : s;
+};
 
 // ─── STORAGE HELPERS ─────────────────────────────────────────────────────────
 // ✅ Save
@@ -70,6 +146,10 @@ export default function ExpenseTracker() {
   const [timeRange, setTimeRange] = useState("thisMonth");
   const [sortBy, setSortBy] = useState("date");
   const [activeTab, setActiveTab] = useState("transactions"); // transactions | analytics | budgets
+  const [txSubTab, setTxSubTab] = useState("active"); // active | trash
+  const [trash, setTrash] = useState([]);
+  const [trendGranularity, setTrendGranularity] = useState("monthly"); // weekly | monthly
+  const [comparisonGranularity, setComparisonGranularity] = useState("monthly"); // weekly | monthly
   const [budgets, setBudgets] = useState({});
   const [recurringRules, setRecurringRules] = useState([]);
   const [selectedTags, setSelectedTags] = useState([]);
@@ -87,11 +167,12 @@ export default function ExpenseTracker() {
   useEffect(() => {
     (async () => {
       const tx  = await load("et:transactions", []);
+      const tr  = await load("et:trash", []);
       const cat = await load("et:categories", CATS);
       const bud = await load("et:budgets", {});
       const rec = await load("et:recurring", []);
       const cfg = await load("et:config", { dark:true, currency:"₹" });
-      setTransactions(tx); setCategories(cat); setBudgets(bud);
+      setTransactions(tx); setTrash(Array.isArray(tr) ? tr : []); setCategories(cat); setBudgets(bud);
       setRecurringRules(rec); setDark(cfg.dark); setCurrency(cfg.currency);
       setLoaded(true);
     })();
@@ -99,6 +180,7 @@ export default function ExpenseTracker() {
 
   // ── Persist on change ──
   useEffect(() => { if (loaded) save("et:transactions", transactions); }, [transactions, loaded]);
+  useEffect(() => { if (loaded) save("et:trash", trash); }, [trash, loaded]);
   useEffect(() => { if (loaded) save("et:categories", categories); }, [categories, loaded]);
   useEffect(() => { if (loaded) save("et:budgets", budgets); }, [budgets, loaded]);
   useEffect(() => { if (loaded) save("et:recurring", recurringRules); }, [recurringRules, loaded]);
@@ -145,18 +227,44 @@ export default function ExpenseTracker() {
     transactions.filter(t=>t.type==="expense").forEach(t=>{
       byCat[t.category] = (byCat[t.category]||0)+Number(t.amount);
     });
-    // Monthly trend (last 6 months)
-    const trend = {};
-    transactions.forEach(t=>{
-      const k = monthKey(t.date);
-      if (!trend[k]) trend[k] = { income:0, expense:0 };
-      trend[k][t.type] += Number(t.amount);
+    const byIncomeCat = {};
+    transactions.filter(t=>t.type==="income").forEach(t=>{
+      byIncomeCat[t.category] = (byIncomeCat[t.category]||0)+Number(t.amount);
     });
-    const trendSorted = Object.entries(trend).sort().slice(-6);
-    // All tags
     const allTags = [...new Set(transactions.flatMap(t=>t.tags||[]))];
-    return { income, expense, balance:income-expense, byCat, trendSorted, allTags };
+    return { income, expense, balance:income-expense, byCat, byIncomeCat, allTags };
   }, [transactions]);
+
+  const monthlyTrendSeries = useMemo(() => {
+    const keys = buildMonthlyBuckets(new Date(), 12);
+    return aggregateTrend(transactions, keys, (d) => monthKey(d));
+  }, [transactions]);
+
+  const weeklyTrendSeries = useMemo(() => {
+    const keys = buildWeeklyBuckets(new Date(), 12);
+    return aggregateTrend(transactions, keys, (d) => weekStartKeyFromDate(d));
+  }, [transactions]);
+
+  const activeTrendSeries = useMemo(
+    () => (trendGranularity === "weekly" ? weeklyTrendSeries : monthlyTrendSeries),
+    [trendGranularity, weeklyTrendSeries, monthlyTrendSeries]
+  );
+  const activeComparisonSeries = useMemo(
+    () => (comparisonGranularity === "weekly" ? weeklyTrendSeries : monthlyTrendSeries),
+    [comparisonGranularity, weeklyTrendSeries, monthlyTrendSeries]
+  );
+
+  const trendChartLabels = useMemo(() => {
+    return activeTrendSeries.map(([k]) =>
+      trendGranularity === "weekly" ? formatWeekLabel(k) : formatMonthLabel(k)
+    );
+  }, [activeTrendSeries, trendGranularity]);
+
+  const comparisonChartLabels = useMemo(() => {
+    return activeComparisonSeries.map(([k]) =>
+      comparisonGranularity === "weekly" ? formatWeekLabel(k) : formatMonthLabel(k)
+    );
+  }, [activeComparisonSeries, comparisonGranularity]);
 
   // ── Budget alerts ──
   const budgetStatus = useMemo(() => {
@@ -192,6 +300,15 @@ export default function ExpenseTracker() {
       });
   }, [transactions, filter, timeRange, search, sortBy, selectedTags]);
 
+  const trashFiltered = useMemo(() => {
+    return trash
+      .filter((t) => {
+        if (search && !String(t.description || "").toLowerCase().includes(search.toLowerCase()) && !t.tags?.some((tag) => tag.toLowerCase().includes(search.toLowerCase()))) return false;
+        return true;
+      })
+      .sort((a, b) => new Date(b.deletedAt || 0) - new Date(a.deletedAt || 0));
+  }, [trash, search]);
+
   // ── Handlers ──
   const resetForm = () => {
     setModal(null); setEditing(null);
@@ -203,7 +320,9 @@ export default function ExpenseTracker() {
     if (!form.amount || !form.description || !form.category) return;
     const tx = {
       id: editing?.id || Date.now().toString(),
-      ...form, amount: parseFloat(form.amount),
+      ...form,
+      date: normalizeFormDate(form.date),
+      amount: parseFloat(form.amount),
       tags: form.tags.split(",").map(t=>t.trim()).filter(Boolean),
     };
     if (editing) {
@@ -216,9 +335,24 @@ export default function ExpenseTracker() {
     resetForm();
   };
 
-  const deleteTx = (id) => {
-    setTransactions(prev => prev.filter(t=>t.id!==id));
-    notify("🗑️ Transaction deleted!", "warn");
+  const moveToTrash = (tx) => {
+    setTransactions((prev) => prev.filter((t) => t.id !== tx.id));
+    setTrash((prev) => [{ ...tx, deletedAt: new Date().toISOString() }, ...prev]);
+    notify("Moved to Trash", "warn");
+  };
+
+  const restoreFromTrash = (item) => {
+    const rest = { ...item };
+    delete rest.deletedAt;
+    setTrash((prev) => prev.filter((t) => t.id !== item.id));
+    setTransactions((prev) => [rest, ...prev]);
+    notify("Transaction restored!");
+  };
+
+  const purgeFromTrash = (id) => {
+    if (!window.confirm("Permanently delete this transaction? This cannot be undone.")) return;
+    setTrash((prev) => prev.filter((t) => t.id !== id));
+    notify("Permanently deleted", "warn");
   };
 
   const exportCSV = () => {
@@ -284,12 +418,23 @@ export default function ExpenseTracker() {
   }, [stats.byCat, categories]);
 
   const trendData = useMemo(() => ({
-    labels: stats.trendSorted.map(([k])=>k),
+    labels: trendChartLabels,
     datasets: [
-      { label:"Income", data:stats.trendSorted.map(([,v])=>v.income), borderColor:"#10b981", backgroundColor:"rgba(16,185,129,0.1)", tension:0.4, fill:true, pointRadius:4 },
-      { label:"Expense", data:stats.trendSorted.map(([,v])=>v.expense), borderColor:"#f43f5e", backgroundColor:"rgba(244,63,94,0.1)", tension:0.4, fill:true, pointRadius:4 },
+      { label:"Income", data:activeTrendSeries.map(([,v])=>v.income), borderColor:"#10b981", backgroundColor:"rgba(16,185,129,0.1)", tension:0.35, fill:true, pointRadius:4 },
+      { label:"Expense", data:activeTrendSeries.map(([,v])=>v.expense), borderColor:"#f43f5e", backgroundColor:"rgba(244,63,94,0.1)", tension:0.35, fill:true, pointRadius:4 },
     ]
-  }), [stats.trendSorted]);
+  }), [activeTrendSeries, trendChartLabels]);
+
+  const incomeDoughnutData = useMemo(() => {
+    const top = Object.entries(stats.byIncomeCat).sort((a,b)=>b[1]-a[1]).slice(0,7);
+    return {
+      labels: top.map(([id])=>categories.find(c=>c.id===id)?.name||id),
+      datasets: [{ data: top.map(([,v])=>v),
+        backgroundColor: top.map(([id])=>categories.find(c=>c.id===id)?.color+"cc"||"#888"),
+        borderColor: top.map(([id])=>categories.find(c=>c.id===id)?.color||"#888"),
+        borderWidth:2, hoverOffset:10 }]
+    };
+  }, [stats.byIncomeCat, categories]);
 
   const chartOpts = { 
     responsive:true, 
@@ -429,19 +574,30 @@ export default function ExpenseTracker() {
         {/* ══════════ TRANSACTIONS TAB ══════════ */}
         {activeTab==="transactions" && (
           <div style={{ display:"grid", gridTemplateColumns:"1fr", gap:20 }}>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center", justifyContent:"space-between" }}>
+              <Pill options={[["active","Active"],["trash", trash.length ? `Trash (${trash.length})` : "Trash"]]} value={txSubTab} onChange={setTxSubTab}/>
+            </div>
+
             {/* Filters row */}
             <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center" }}>
               <div style={{ position:"relative", flex:"1 1 200px" }}>
                 <Search size={14} style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", color:"var(--muted)" }}/>
-                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search…" style={{ width:"100%", paddingLeft:36, padding:"10px 12px 10px 36px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:10, fontSize:14, color:"var(--text)", outline:"none" }}/>
+                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder={txSubTab === "trash" ? "Search trash…" : "Search…"} style={{ width:"100%", paddingLeft:36, padding:"10px 12px 10px 36px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:10, fontSize:14, color:"var(--text)", outline:"none" }}/>
               </div>
-              <Pill options={[["all","All"],["income","Income"],["expense","Expense"]]} value={filter} onChange={setFilter}/>
-              <Pill options={[["thisMonth","This Month"],["lastMonth","Last Month"],["thisYear","Year"],["all","All Time"]]} value={timeRange} onChange={setTimeRange}/>
-              <Pill options={[["date","Date"],["amount","Amount"],["description","A-Z"]]} value={sortBy} onChange={setSortBy} prefix={<ArrowUpDown size={12}/>}/>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center", opacity: txSubTab === "trash" ? 0.45 : 1, pointerEvents: txSubTab === "trash" ? "none" : "auto" }}>
+                <Pill options={[["all","All"],["income","Income"],["expense","Expense"]]} value={filter} onChange={setFilter}/>
+                <Pill options={[["thisMonth","This Month"],["lastMonth","Last Month"],["thisYear","Year"],["all","All Time"]]} value={timeRange} onChange={setTimeRange}/>
+                <Pill options={[["date","Date"],["amount","Amount"],["description","A-Z"]]} value={sortBy} onChange={setSortBy} prefix={<ArrowUpDown size={12}/>}/>
+              </div>
             </div>
+            {txSubTab === "trash" && (
+              <p style={{ fontSize:13, color:"var(--muted)", marginTop:-8 }}>
+                Deleted items stay here until you restore them or delete permanently.
+              </p>
+            )}
 
             {/* Tag cloud */}
-            {stats.allTags.length>0 && (
+            {txSubTab === "active" && stats.allTags.length>0 && (
               <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
                 {stats.allTags.slice(0,12).map(tag=>(
                   <button key={tag} onClick={()=>setSelectedTags(prev=>prev.includes(tag)?prev.filter(t=>t!==tag):[...prev,tag])} style={{ padding:"4px 10px", borderRadius:20, fontSize:12, fontWeight:500, cursor:"pointer", border:`1px solid ${selectedTags.includes(tag)?"var(--accent)":"var(--border)"}`, background:selectedTags.includes(tag)?"rgba(99,102,241,0.15)":"var(--surface2)", color:selectedTags.includes(tag)?"var(--accent)":"var(--muted)", transition:"all .15s" }}>
@@ -454,12 +610,13 @@ export default function ExpenseTracker() {
 
             {/* Transaction list */}
             <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-              {filtered.length===0 ? (
+              {txSubTab === "active" && filtered.length===0 && (
                 <div style={{ textAlign:"center", padding:"60px 0", color:"var(--muted)" }}>
                   <Wallet size={32} style={{ margin:"0 auto 12px", opacity:0.3 }}/>
                   <p style={{ fontSize:15 }}>No transactions found</p>
                 </div>
-              ) : filtered.map(t=>{
+              )}
+              {txSubTab === "active" && filtered.map(t=>{
                 const cat = categories.find(c=>c.id===t.category)||{};
                 return (
                   <div key={t.id} className="anim" style={{ display:"flex", alignItems:"center", gap:14, padding:"14px 18px", background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--r2)", transition:"all .15s", cursor:"default" }}
@@ -472,7 +629,7 @@ export default function ExpenseTracker() {
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ fontSize:14, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{t.description}</div>
                       <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:3 }}>
-                        <span style={{ fontSize:11, color:"var(--muted)" }}>{new Date(t.date).toLocaleDateString("en-IN",{day:"numeric",month:"short"})}</span>
+                        <span style={{ fontSize:11, color:"var(--muted)" }}>{new Date(t.date + "T12:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short", year: "numeric"})}</span>
                         {cat.name && <span style={{ fontSize:11, color:"var(--muted)" }}>· {cat.name}</span>}
                         {(t.tags||[]).slice(0,2).map(tag=><span key={tag} style={{ fontSize:10, padding:"1px 7px", borderRadius:20, background:"rgba(99,102,241,0.12)", color:"var(--accent)" }}>#{tag}</span>)}
                       </div>
@@ -484,7 +641,44 @@ export default function ExpenseTracker() {
                     {/* Actions */}
                     <div style={{ display:"flex", gap:4, flexShrink:0 }}>
                       <IconBtn icon={<Edit2 size={13}/>} onClick={()=>{setEditing(t);setForm({...t,tags:(t.tags||[]).join(", ")});setModal("add");}} small/>
-                      <IconBtn icon={<Trash2 size={13}/>} onClick={()=>deleteTx(t.id)} small danger/>
+                      <IconBtn icon={<Trash2 size={13}/>} onClick={()=>moveToTrash(t)} small danger/>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {txSubTab === "trash" && trashFiltered.length===0 && (
+                <div style={{ textAlign:"center", padding:"60px 0", color:"var(--muted)" }}>
+                  <Archive size={32} style={{ margin:"0 auto 12px", opacity:0.3 }}/>
+                  <p style={{ fontSize:15 }}>Trash is empty</p>
+                </div>
+              )}
+              {txSubTab === "trash" && trashFiltered.map((t)=>{
+                const cat = categories.find(c=>c.id===t.category)||{};
+                return (
+                  <div key={t.id} className="anim" style={{ display:"flex", alignItems:"center", gap:14, padding:"14px 18px", background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--r2)", transition:"all .15s", cursor:"default" }}
+                    onMouseEnter={e=>e.currentTarget.style.borderColor="var(--border2)"}
+                    onMouseLeave={e=>e.currentTarget.style.borderColor="var(--border)"}
+                  >
+                    <div style={{ width:42, height:42, borderRadius:12, display:"flex", alignItems:"center", justifyContent:"center", fontSize:20, background:"rgba(100,116,139,0.2)", flexShrink:0 }}><Archive size={18} color="var(--muted)"/></div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:14, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{t.description}</div>
+                      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:3 }}>
+                        <span style={{ fontSize:11, color:"var(--muted)" }}>Txn {new Date(t.date + "T12:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short", year:"numeric"})}</span>
+                        {cat.name && <span style={{ fontSize:11, color:"var(--muted)" }}>· {cat.name}</span>}
+                        <span style={{ fontSize:11, color:"var(--muted)" }}>· Deleted {t.deletedAt ? new Date(t.deletedAt).toLocaleString("en-IN",{ day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" }) : "—"}</span>
+                      </div>
+                    </div>
+                    <div style={{ fontWeight:700, fontSize:15, color:t.type==="income"?"var(--income)":"var(--expense)", flexShrink:0 }}>
+                      {t.type==="income"?"+":"-"}{fmt(t.amount,privacy,currency)}
+                    </div>
+                    <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+                      <button type="button" onClick={()=>restoreFromTrash(t)} title="Restore" style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", borderRadius:9, fontSize:12, fontWeight:600, border:"1px solid var(--border2)", background:"var(--surface2)", color:"var(--text)", cursor:"pointer" }}>
+                        <RotateCcw size={13}/> Restore
+                      </button>
+                      <button type="button" onClick={()=>purgeFromTrash(t.id)} title="Delete permanently" style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", borderRadius:9, fontSize:12, fontWeight:600, border:"1px solid rgba(244,63,94,0.35)", background:"rgba(244,63,94,0.08)", color:"#f43f5e", cursor:"pointer" }}>
+                        <Trash2 size={13}/> Erase
+                      </button>
                     </div>
                   </div>
                 );
@@ -528,23 +722,61 @@ export default function ExpenseTracker() {
               )}
             </Card>
 
-            {/* Monthly trend */}
-            <Card title="6-Month Trend">
-              {stats.trendSorted.length===0 ? <Empty msg="Not enough data"/> : (
+            {/* Income breakdown */}
+            <Card title="Income Breakdown">
+              {Object.keys(stats.byIncomeCat).length===0 ? <Empty msg="No income yet"/> : (
+                <>
+                  <div style={{ height:220, marginBottom:16 }}>
+                    <Doughnut data={incomeDoughnutData} options={{ responsive:true, maintainAspectRatio:false, cutout:"68%", plugins:{ legend:{display:false}, tooltip:{ backgroundColor:"rgba(10,10,20,0.95)", padding:10, cornerRadius:8, callbacks:{ label:(ctx)=>`${ctx.label}: ${fmt(ctx.parsed,false,currency)}` } } } }}/>
+                  </div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                    {Object.entries(stats.byIncomeCat).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([id,amt])=>{
+                      const cat = categories.find(c=>c.id===id)||{};
+                      const pct = stats.income ? ((amt/stats.income)*100).toFixed(1) : 0;
+                      return (
+                        <div key={id} style={{ display:"flex", alignItems:"center", gap:10 }}>
+                          <span style={{ fontSize:14 }}>{cat.emoji}</span>
+                          <div style={{ flex:1 }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
+                              <span style={{ color:"var(--muted)" }}>{cat.name}</span>
+                              <span style={{ fontWeight:600 }}>{pct}%</span>
+                            </div>
+                            <div style={{ height:4, background:"var(--surface3)", borderRadius:4, overflow:"hidden" }}>
+                              <div style={{ width:`${pct}%`, height:"100%", background:cat.color||"var(--income)", borderRadius:4, transition:"width .5s ease" }}/>
+                            </div>
+                          </div>
+                          <span style={{ fontSize:12, color:"var(--muted)", minWidth:60, textAlign:"right" }}>{fmt(amt,privacy,currency)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </Card>
+
+            {/* Cash flow trend */}
+            <Card
+              title="Cash Flow Trend"
+              headerRight={<Pill options={[["weekly","Weekly"],["monthly","Monthly"]]} value={trendGranularity} onChange={setTrendGranularity} />}
+            >
+              {transactions.length===0 ? <Empty msg="Not enough data"/> : (
                 <div style={{ height:260 }}>
-                  <Line data={trendData} options={{ ...chartOpts, plugins:{ ...chartOpts.plugins, legend:{ display:true, labels:{ color: dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.7)", font:{size:11}, boxWidth:10, padding:14 } } }, scales:{ x:{ grid:{color: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)"}, ticks:{color: dark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.5)",font:{size:11}} }, y:{ grid:{color: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)"}, ticks:{color: dark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.5)",font:{size:11},callback:v=>fmt(v,false,currency)} } } }}/>
+                  <Line data={trendData} options={{ ...chartOpts, plugins:{ ...chartOpts.plugins, legend:{ display:true, labels:{ color: dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.7)", font:{size:11}, boxWidth:10, padding:14 } } }, scales:{ x:{ grid:{color: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)"}, ticks:{color: dark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.5)",font:{size:10}, maxRotation:45, minRotation:0} }, y:{ grid:{color: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)"}, ticks:{color: dark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.5)",font:{size:11},callback:v=>fmt(v,false,currency)} } } }}/>
                 </div>
               )}
             </Card>
 
-            {/* Income vs Expense bar */}
-            <Card title="Monthly Comparison">
-              {stats.trendSorted.length===0 ? <Empty msg="Not enough data"/> : (
+            {/* Income vs Expense comparison */}
+            <Card
+              title="Income vs Expense"
+              headerRight={<Pill options={[["weekly","Weekly"],["monthly","Monthly"]]} value={comparisonGranularity} onChange={setComparisonGranularity} />}
+            >
+              {transactions.length===0 ? <Empty msg="Not enough data"/> : (
                 <div style={{ height:260 }}>
-                  <Bar data={{ labels:stats.trendSorted.map(([k])=>k), datasets:[
-                    { label:"Income", data:stats.trendSorted.map(([,v])=>v.income), backgroundColor:"rgba(16,185,129,0.7)", borderRadius:6, borderSkipped:false },
-                    { label:"Expense", data:stats.trendSorted.map(([,v])=>v.expense), backgroundColor:"rgba(244,63,94,0.7)", borderRadius:6, borderSkipped:false },
-                  ]}} options={{ ...chartOpts, plugins:{ ...chartOpts.plugins, legend:{ display:true, labels:{ color: dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.7)", font:{size:11}, boxWidth:10, padding:14 } } }, scales:{ x:{ grid:{color: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)"}, ticks:{color: dark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.5)",font:{size:11}} }, y:{ grid:{color: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)"}, ticks:{color: dark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.5)",font:{size:11},callback:(v)=>fmt(v,false,currency)} } } }}/>
+                  <Bar data={{ labels: comparisonChartLabels, datasets:[
+                    { label:"Income", data:activeComparisonSeries.map(([,v])=>v.income), backgroundColor:"rgba(16,185,129,0.7)", borderRadius:6, borderSkipped:false },
+                    { label:"Expense", data:activeComparisonSeries.map(([,v])=>v.expense), backgroundColor:"rgba(244,63,94,0.7)", borderRadius:6, borderSkipped:false },
+                  ]}} options={{ ...chartOpts, plugins:{ ...chartOpts.plugins, legend:{ display:true, labels:{ color: dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.7)", font:{size:11}, boxWidth:10, padding:14 } } }, scales:{ x:{ grid:{color: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)"}, ticks:{color: dark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.5)",font:{size:10}, maxRotation:45, minRotation:0} }, y:{ grid:{color: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)"}, ticks:{color: dark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.5)",font:{size:11},callback:(v)=>fmt(v,false,currency)} } } }}/>
                 </div>
               )}
             </Card>
@@ -677,8 +909,14 @@ export default function ExpenseTracker() {
               </div>
               {/* Description */}
               <input placeholder="Description" value={form.description} onChange={e=>setForm(p=>({...p,description:e.target.value}))} required style={inputStyle}/>
-              {/* Date */}
-              <input type="date" value={form.date} onChange={e=>setForm(p=>({...p,date:e.target.value}))} required style={inputStyle}/>
+              {/* Transaction date */}
+              <div>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, color:"var(--muted)", fontSize:12, fontWeight:600 }}>
+                  <Calendar size={14}/> Transaction date
+                </div>
+                <input type="date" value={form.date} onChange={e=>setForm(p=>({...p,date:e.target.value}))} required style={inputStyle}/>
+                <p style={{ fontSize:11, color:"var(--muted)", marginTop:6 }}>Defaults to today. Pick any past (or future) date for backfills or planned entries.</p>
+              </div>
               {/* Tags */}
               <input placeholder="Tags (comma separated)" value={form.tags} onChange={e=>setForm(p=>({...p,tags:e.target.value}))} style={inputStyle}/>
               {/* Note */}
@@ -720,9 +958,12 @@ const KpiCard = ({ label, value, sub, accent }) => (
   </div>
 );
 
-const Card = ({ title, children }) => (
+const Card = ({ title, headerRight, children }) => (
   <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:20, padding:24 }}>
-    <h3 style={{ fontSize:15, fontWeight:600, marginBottom:18, color:"var(--text)" }}>{title}</h3>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap", marginBottom:18 }}>
+      <h3 style={{ fontSize:15, fontWeight:600, margin:0, color:"var(--text)" }}>{title}</h3>
+      {headerRight}
+    </div>
     {children}
   </div>
 );

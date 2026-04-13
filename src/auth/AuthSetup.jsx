@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { SECURITY_QUESTIONS, hashString, saveAuth, inputStyle, btnPrimary } from "./AuthUtils";
 
-export default function AuthSetup({ onSetupComplete }) {
+export default function AuthSetup({ onSetupComplete, onBack }) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -78,6 +78,15 @@ export default function AuthSetup({ onSetupComplete }) {
 
   return (
     <div className="anim" style={{ maxWidth: 480, margin: "60px auto", padding: "32px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r2)" }}>
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 13, cursor: "pointer", marginBottom: 16, padding: 0 }}
+        >
+          ← Back
+        </button>
+      )}
       <h2 className="serif" style={{ fontSize: 32, marginBottom: 8 }}>Welcome to Expense Tracker</h2>
       <p style={{ color: "var(--muted)", marginBottom: 24, fontSize: 14 }}>It looks like it's your first time here. Please set up a password to secure your data.</p>
       

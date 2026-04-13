@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from "react";
 import { hashString, loadAuth, saveAuth, inputStyle, btnPrimary } from "./AuthUtils";
 
-export default function AuthLogin({ onLogin }) {
+export default function AuthLogin({ onLogin, onGoToSetup, onBackToChoose }) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [mode, setMode] = useState("login"); // "login" | "migrate" | "forgot_identifier" | "forgot_question" | "reset"
 
   const [authData, setAuthData] = useState(null);
-  
+  const [hydrated, setHydrated] = useState(false);
+
   // Forgot password state
   const [selectedQuestion, setSelectedQuestion] = useState("");
   const [answer, setAnswer] = useState("");
@@ -20,6 +21,7 @@ export default function AuthLogin({ onLogin }) {
     if (data && !data.identifier) {
       setMode("migrate");
     }
+    setHydrated(true);
   }, []);
 
   const handleMigrate = (e) => {
@@ -118,10 +120,56 @@ export default function AuthLogin({ onLogin }) {
     alert("Password successfully reset. You can now log in.");
   };
 
-  if (!authData) return null;
+  if (!hydrated) return null;
+
+  if (!authData) {
+    return (
+      <div className="anim" style={{ maxWidth: 440, margin: "80px auto", padding: "32px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r2)" }}>
+        <h2 className="serif" style={{ fontSize: 32, marginBottom: 8 }}>Sign in</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 24, fontSize: 14, lineHeight: 1.55 }}>
+          No saved profile was found in this browser. Sign in is only available here if you already created an account on this same device and browser.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {typeof onGoToSetup === "function" && (
+            <button type="button" onClick={onGoToSetup} style={btnPrimary}>
+              Create account
+            </button>
+          )}
+          {typeof onBackToChoose === "function" && (
+            <button
+              type="button"
+              onClick={onBackToChoose}
+              style={{
+                width: "100%",
+                padding: "12px 20px",
+                borderRadius: 12,
+                border: "1px solid var(--border2)",
+                background: "transparent",
+                color: "var(--text)",
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Back
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="anim" style={{ maxWidth: 440, margin: "80px auto", padding: "32px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r2)" }}>
+      {typeof onBackToChoose === "function" && mode === "login" && (
+        <button
+          type="button"
+          onClick={onBackToChoose}
+          style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 13, cursor: "pointer", marginBottom: 16, padding: 0, display: "block" }}
+        >
+          ← Back
+        </button>
+      )}
       <h2 className="serif" style={{ fontSize: 32, marginBottom: 8 }}>
         {mode === "login" ? "Welcome Back" : mode === "migrate" ? "Update Required" : mode === "reset" ? "Reset Password" : "Account Recovery"}
       </h2>
